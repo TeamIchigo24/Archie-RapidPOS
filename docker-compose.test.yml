@@ -1,0 +1,142 @@
+version: '3.8'
+
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      SA_PASSWORD: "Password123!"
+      ACCEPT_EULA: "Y"
+    ports:
+      - "1433:1433"
+    volumes:
+      - dbdata:/var/opt/mssql
+
+  payment-gateway:
+    build:
+      context: AutomationRapidPOS/Test/MockPayment
+      dockerfile: Dockerfile
+    ports:
+      - "8082:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/pay"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  checkoutservice:
+    build:
+      context: AutomationRapidPOS/CheckoutService
+      dockerfile: Dockerfile
+    depends_on:
+      - db
+      - payment-gateway
+      - db-init
+    environment:
+      - Sql__ConnectionString=Server=db;Database=MyDatabase;User Id=sa;Password=Password123!;TrustServerCertificate=True;Encrypt=False
+      # bind only to HTTP inside container to avoid requiring developer HTTPS cert
+      - ASPNETCORE_URLS=http://+:8080
+      - PAYMENT_GATEWAY_URL=http://payment-gateway:8080
+    ports:
+      - "8080:8080"
+
+  db-init:
+    image: mcr.microsoft.com/mssql-tools
+    depends_on:
+      - db
+    volumes:
+      - ./AutomationRapidPOS/schema.sql:/scripts/schema.sql:ro
+      - ./AutomationRapidPOS/seed‑data.sql:/scripts/seed-data.sql:ro
+    entrypoint: ["/bin/bash", "-c", "sleep 10; /opt/mssql-tools/bin/sqlcmd -S db -U sa -P Password123! -Q \"IF DB_ID('MyDatabase') IS NULL CREATE DATABASE [MyDatabase];\"; /opt/mssql-tools/bin/sqlcmd -S db -U sa -P Password123! -d MyDatabase -i /scripts/schema.sql; /opt/mssql-tools/bin/sqlcmd -S db -U sa -P Password123! -d MyDatabase -i /scripts/seed-data.sql; echo 'db init done'"]
+
+  checker:
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    depends_on:
+      - checkoutservice
+      - db
+      - db-init
+    working_dir: /src
+    volumes:
+      - ./AutomationRapidPOS:/src
+    environment:
+      - CHECKOUT_URL=http://checkoutservice:8080
+      - TEST_DB_CONN=Server=db;Database=MyDatabase;User Id=sa;Password=Password123!;TrustServerCertificate=True;Encrypt=False
+    # project path is relative to /src
+    command: ["/bin/bash", "-lc", "dotnet run --project Test/TC01Checker/TC01.Checker.csproj"]
+
+  checker-tc01:
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    depends_on:
+      - checkoutservice
+      - db
+      - db-init
+    working_dir: /src
+    volumes:
+      - ./AutomationRapidPOS:/src
+    environment:
+      - CHECKOUT_URL=http://checkoutservice:8080
+      - TEST_DB_CONN=Server=db;Database=MyDatabase;User Id=sa;Password=Password123!;TrustServerCertificate=True;Encrypt=False
+    # runs TC01 checker (successful payment)
+    command: ["/bin/bash", "-lc", "dotnet run --project Test/TC01Checker/TC01.Checker.csproj"]
+
+  checker-tc02:
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    depends_on:
+      - checkoutservice
+      - db
+      - db-init
+    working_dir: /src
+    volumes:
+      - ./AutomationRapidPOS:/src
+    environment:
+      - CHECKOUT_URL=http://checkoutservice:8080
+      - TEST_DB_CONN=Server=db;Database=MyDatabase;User Id=sa;Password=Password123!;TrustServerCertificate=True;Encrypt=False
+    # runs TC02 checker (declined payment)
+    command: ["/bin/bash", "-lc", "dotnet run --project Test/TC02Checker/TC02.Checker.csproj"]
+
+  checker-tc04:
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    depends_on:
+      - checkoutservice
+      - db
+      - db-init
+    working_dir: /src
+    volumes:
+      - ./AutomationRapidPOS:/src
+    environment:
+      - CHECKOUT_URL=http://checkoutservice:8080
+      - TEST_DB_CONN=Server=db;Database=MyDatabase;User Id=sa;Password=Password123!;TrustServerCertificate=True;Encrypt=False
+    # runs TC04 checker (DB verification after declined payment)
+    command: ["/bin/bash", "-lc", "dotnet run --project Test/TC04Checker/TC04.Checker.csproj"]
+
+  checker-tc03:
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    depends_on:
+      - checkoutservice
+      - db
+      - db-init
+    working_dir: /src
+    volumes:
+      - ./AutomationRapidPOS:/src
+    environment:
+      - CHECKOUT_URL=http://checkoutservice:8080
+      - TEST_DB_CONN=Server=db;Database=MyDatabase;User Id=sa;Password=Password123!;TrustServerCertificate=True;Encrypt=False
+    # runs TC03 checker (database verification after successful payment)
+    command: ["/bin/bash", "-lc", "dotnet run --project Test/TC03Checker/TC03.Checker.csproj"]
+
+  checker-all:
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    depends_on:
+      - checkoutservice
+      - db
+      - db-init
+    working_dir: /src
+    volumes:
+      - ./AutomationRapidPOS:/src
+    environment:
+      - CHECKOUT_URL=http://checkoutservice:8080
+      - TEST_DB_CONN=Server=db;Database=MyDatabase;User Id=sa;Password=Password123!;TrustServerCertificate=True;Encrypt=False
+    # Run all checkers sequentially; any failure will stop the chain and return non-zero
+    command: ["/bin/bash", "-lc", "dotnet run --project Test/TC01Checker/TC01.Checker.csproj && dotnet run --project Test/TC02Checker/TC02.Checker.csproj && dotnet run --project Test/TC03Checker/TC03.Checker.csproj && dotnet run --project Test/TC04Checker/TC04.Checker.csproj"]
+
+volumes:
+  dbdata:

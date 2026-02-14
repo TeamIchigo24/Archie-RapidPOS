@@ -1,0 +1,78 @@
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+resources: {}
+
+jobs:
+- job: Test
+  displayName: Run tests and coverage
+  pool:
+    vmImage: 'ubuntu-latest'
+  services:
+    postgres:
+      image: postgres:13
+      env:
+        POSTGRES_USER: postgres
+        POSTGRES_PASSWORD: postgres
+        POSTGRES_DB: testdb
+      ports:
+        - 5432:5432
+      options: >-
+        --health-cmd pg_isready -U postgres
+        --health-interval 10s
+        --health-timeout 5s
+        --health-retries 5
+
+  steps:
+  - task: UseDotNet@2
+    displayName: 'Use .NET SDK'
+    inputs:
+      packageType: 'sdk'
+      version: '8.0.x'
+
+  - script: dotnet restore
+    displayName: Restore
+
+  - script: dotnet build --configuration Release --no-restore
+    displayName: Build
+
+  - script: |
+      dotnet test AutomationRapidPOS/CheckoutService/CheckoutService.csproj --configuration Release --no-build --logger "trx;LogFileName=TestResults.trx" /p:CollectCoverage=true /p:CoverletOutput=TestResults/ /p:CoverletOutputFormat=cobertura
+    displayName: Run tests with coverage
+
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: 'VSTest'
+      testResultsFiles: '**/TestResults.trx'
+      failTaskOnFailedTests: true
+
+  - task: PublishCodeCoverageResults@1
+    inputs:
+      codeCoverageTool: 'Cobertura'
+      summaryFileLocation: '$(System.DefaultWorkingDirectory)/**/coverage.cobertura.xml'
+      reportDirectory: '$(System.DefaultWorkingDirectory)/coverage-report'
+
+  - script: |
+      dotnet tool install --global dotnet-reportgenerator-globaltool --version 5.*
+      reportgenerator -reports:$(System.DefaultWorkingDirectory)/**/coverage.cobertura.xml -targetdir:coverage-report -reporttypes:HtmlSummary
+    displayName: Generate coverage report
+
+  - script: |
+      python3 - <<'PY'
+      import xml.etree.ElementTree as ET, sys, glob
+      files = glob.glob('**/coverage.cobertura.xml', recursive=True)
+      if not files:
+        print('coverage file not found'); sys.exit(1)
+      tree=ET.parse(files[0]); root=tree.getroot()
+      lr=root.attrib.get('line-rate')
+      if lr is None:
+        print('line-rate not found'); sys.exit(1)
+      coverage=float(lr)*100
+      print(f'Coverage: {coverage:.2f}%')
+      if coverage < 70.0:
+        print('Coverage below 70%'); sys.exit(1)
+      PY
+    displayName: Enforce coverage threshold
